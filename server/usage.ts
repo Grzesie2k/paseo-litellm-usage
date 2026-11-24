@@ -12,6 +12,8 @@ import { authPath, readCandidates, readKey } from "./config.js";
 
 const responseSchema = z.object({
   user_info: z.object({
+    user_email: z.string().nullable().optional(),
+    user_alias: z.string().nullable().optional(),
     spend: z.number().finite(),
     max_budget: z.number().finite().nullable(),
     budget_duration: z.string().nullable().optional(),
@@ -26,12 +28,20 @@ function userInfo(baseUrl: string, key: string, fetchApi: typeof fetch): Promise
   });
 }
 
-async function isLiteLlm(baseUrl: string, key: string, fetchApi: typeof fetch): Promise<boolean> {
+async function probeAccount(
+  baseUrl: string,
+  key: string,
+  fetchApi: typeof fetch,
+): Promise<string | null | undefined> {
   try {
     const response = await userInfo(baseUrl, key, fetchApi);
-    return response.ok && responseSchema.safeParse(await response.json()).success;
+    if (!response.ok) return undefined;
+    const parsed = responseSchema.safeParse(await response.json());
+    if (!parsed.success) return undefined;
+    const { user_email, user_alias } = parsed.data.user_info;
+    return user_email || user_alias || null;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -42,10 +52,12 @@ export async function discover(
   const accounts = await Promise.all(
     (await readCandidates()).map(async (candidate): Promise<UsageAccount | null> => {
       const key = await readKey(path, candidate.provider);
-      if (!key || !(await isLiteLlm(candidate.baseUrl, key, fetchApi))) return null;
+      if (!key) return null;
+      const identity = await probeAccount(candidate.baseUrl, key, fetchApi);
+      if (identity === undefined) return null;
       return {
         key: hashAccountKey(`${path}:${candidate.provider}`),
-        label: candidate.name,
+        label: identity ? `${candidate.name} (${identity})` : candidate.name,
         harness: "OpenCode",
         input: { provider: candidate.provider, authPath: path, baseUrl: candidate.baseUrl },
       };
